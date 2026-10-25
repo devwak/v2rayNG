@@ -34,12 +34,23 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Setup Android SDK
+      - name: Setup Android SDK (manual)
         uses: android-actions/setup-android@v3
         with:
-          packages: 'tools platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125'
-          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: true
+        continue-on-error: true   # 先允许它失败
 
+      - name: Install required Android packages
+        run: |
+          # 确保 sdkmanager 可用
+          yes | sdkmanager --licenses || true
+          
+          # 安装必要组件
+          sdkmanager "platform-tools" "platforms;android-34" "platforms;android-35" "build-tools;34.0.0" "build-tools;35.0.0" "ndk;26.1.10909125" || true
+          
+          # 再试一次
+          yes | sdkmanager --licenses || true
+          
       - name: Install gomobile
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
