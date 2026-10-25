@@ -15,18 +15,20 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Checkout custom Xray-core (public)
+      - name: Checkout custom Xray-core
         uses: actions/checkout@v4
         with:
           repository: devwak/Xray-core
-          ref: main                    # ← 改成你想要的 commit（或 main）
+          ref: main                    # 或者改成你想要的 commit，例如 315e17b
           path: Xray-core
           fetch-depth: 0
+          # 如果仓库是私有的，需要加 token：
+          # token: ${{ secrets.GH_TOKEN }}
 
-      - name: Set up Go 1.27.3
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27.3'             # 强制使用 1.27.3（修复印度证书问题）
+          go-version: '1.25.x'         # 建议用 1.25 或 1.24，1.27 可能太新
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -34,23 +36,17 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Setup Android SDK (manual)
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          log-accepted-android-sdk-licenses: true
-        continue-on-error: true   # 先允许它失败
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
-      - name: Install required Android packages
+      - name: Install NDK
         run: |
-          # 确保 sdkmanager 可用
           yes | sdkmanager --licenses || true
-          
-          # 安装必要组件
-          sdkmanager "platform-tools" "platforms;android-34" "platforms;android-35" "build-tools;34.0.0" "build-tools;35.0.0" "ndk;26.1.10909125" || true
-          
-          # 再试一次
-          yes | sdkmanager --licenses || true
-          
+          sdkmanager --install "ndk;26.1.10909125" || sdkmanager --install "ndk;27.0.12077973" || true
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$(ls $ANDROID_HOME/ndk | head -1)" >> $GITHUB_ENV
+
       - name: Install gomobile
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
@@ -61,21 +57,21 @@ jobs:
         run: |
           cd AndroidLibXrayLite
           
-          # 重新初始化并强制指向你的魔改 core
+          # 清理并重新初始化
           rm -f go.mod go.sum
           go mod init github.com/2dust/AndroidLibXrayLite
           
-          # 使用本地的魔改 Xray-core（公共仓库已克隆）
+          # 强制使用你的魔改核心
           go mod edit -replace github.com/xtls/xray-core=../Xray-core
           
-          # 你的 core 已经有本地 replace，这里再保险加一次（可选）
+          # 你的本地 replace（确保生效）
           go mod edit -replace github.com/apernet/quic-go=../Xray-core/my-quic-go_v0.63.0_magic
           go mod edit -replace github.com/quic-go/qpack=../Xray-core/my-qpack_v0.6.0
           go mod edit -replace github.com/hy2normal/quic-go=../Xray-core/my-quic-go_v0.63.0_normal_myNoChrome
           
           go mod tidy -v
           
-          # 生成 geoip / geosite
+          # 生成 assets（geoip/geosite）
           bash gen_assets.sh download || true
           mkdir -p assets
           cp -v data/*.dat assets/ 2>/dev/null || true
@@ -88,10 +84,18 @@ jobs:
             -ldflags='-s -w -buildid= -checklinkname=0' \
             ./
           
-          # 复制到 v2rayNG 需要的位置
+          # 复制 aar
           mkdir -p ../V2rayNG/app/libs
           cp -v libv2ray.aar ../V2rayNG/app/libs/
           ls -lh ../V2rayNG/app/libs/libv2ray.aar
+
+      # 可选：编译 hev-socks5-tunnel（如果官方构建需要）
+      - name: Build hev-socks5-tunnel (optional but recommended)
+        run: |
+          if [ -f compile-hevtun.sh ]; then
+            bash compile-hevtun.sh || true
+            cp -r libs V2rayNG/app/ 2>/dev/null || true
+          fi
 
       - name: Build Debug APK (arm64 only)
         run: |
@@ -100,15 +104,22 @@ jobs:
           chmod +x gradlew
           
           ./gradlew clean
-          # 强制只打 arm64-v8a Debug（使用 debug 签名）
-          ./gradlew assembleDebug -Pandroid.injected.build.abi=arm64-v8a
+          
+          # 正确方式：使用 ABI_FILTERS 只打 arm64-v8a Debug
+          ./gradlew assembleDebug -PABI_FILTERS=arm64-v8a
+          
+          # 调试：列出所有生成的 APK
+          echo "========== 生成的 APK 文件 =========="
+          find app/build/outputs/apk -name "*.apk" -type f || true
+          ls -lhR app/build/outputs/apk/ || true
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: v2rayNG-arm64-debug-custom-core
           path: |
-            V2rayNG/app/build/outputs/apk/debug/*arm64*.apk
-            V2rayNG/app/build/outputs/apk/debug/*.apk
+            V2rayNG/app/build/outputs/apk/**/debug/*.apk
+            V2rayNG/app/build/outputs/apk/**/*arm64*.apk
+            V2rayNG/app/build/outputs/apk/**/*.apk
           retention-days: 14
           if-no-files-found: error
